@@ -25,6 +25,7 @@ const EARLIEST_START_MIN = 0;
 const EARLIEST_START_MAX = 14 * 60;
 const LATEST_END_MIN = 12 * 60;
 const LATEST_END_MAX = 30 * 60;
+const MAX_DEADHEAD_MAX = 360;
 
 export default function FilterSidebar({ filters, setFilters, totals, allRoutes }) {
   const update = (patch) => setFilters((f) => ({ ...f, ...patch }));
@@ -59,7 +60,7 @@ export default function FilterSidebar({ filters, setFilters, totals, allRoutes }
               minBonusMin: 0,
               sameDepotOnly: false,
               singleRouteOnly: false,
-              maxDeadheadMin: 240,
+              maxDeadheadMin: MAX_DEADHEAD_MAX,
               search: '',
             })
           }
@@ -254,15 +255,17 @@ export default function FilterSidebar({ filters, setFilters, totals, allRoutes }
           <input
             type="range"
             min="0"
-            max="240"
+            max={MAX_DEADHEAD_MAX}
             step="5"
             value={filters.maxDeadheadMin}
             onChange={(e) => update({ maxDeadheadMin: Number(e.target.value) })}
             className="flex-1 accent-blue-600"
             aria-label="Maximum deadhead minutes"
           />
-          <output className="text-base font-mono w-16 text-right">
-            {filters.maxDeadheadMin}m
+          <output className="text-base font-mono w-32 text-right">
+            {filters.maxDeadheadMin >= MAX_DEADHEAD_MAX
+              ? 'Any'
+              : `${filters.maxDeadheadMin}m`}
           </output>
         </div>
       </fieldset>

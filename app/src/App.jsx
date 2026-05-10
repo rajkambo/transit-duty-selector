@@ -19,7 +19,7 @@ const DEFAULT_FILTERS = {
   minBonusMin: 0,
   sameDepotOnly: false,
   singleRouteOnly: false,
-  maxDeadheadMin: 240,
+  maxDeadheadMin: 360,
   search: '',
 };
 

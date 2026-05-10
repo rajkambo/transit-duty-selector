@@ -85,6 +85,51 @@ function buildSegmentsForPiece(piece, blocksIndex, signupKindToServiceGroups) {
   let deadhead = 0;
   let layover = 0;
 
+  // Pull-out (POT): the bus pulls out of the depot at pot_min and drives
+  // to the first revenue trip's leave node. This is paid working time
+  // before any passenger movement. We only emit it when the very first
+  // trip of the entire block is in our window — otherwise the driver took
+  // over mid-block and didn't perform the pull-out.
+  if (
+    trips.length > 0 &&
+    trips[0] === block.trips[0] &&
+    trips[0].pot_min != null &&
+    trips[0].pot_node != null &&
+    trips[0].pot_min < trips[0].leave_time_min
+  ) {
+    const t0 = trips[0];
+    const dur = t0.leave_time_min - t0.pot_min;
+    segments.push({
+      kind: 'deadhead',
+      start: t0.pot_min,
+      end: t0.leave_time_min,
+      label: `Route ${t0.line ?? '?'} ${t0.pot_node} → ${t0.leave_node}`,
+      meta: {
+        kind: 'pot',
+        line: t0.line,
+        leave_node: t0.pot_node,
+        arrive_node: t0.leave_node,
+      },
+    });
+    deadhead += dur;
+  }
+
+  // Sign-on filler: any time inside the piece that's still earlier than
+  // the bus's first observed movement. Renders as inert grey on the
+  // timeline; hidden from the trip list because it has no useful label.
+  const firstSegStart =
+    segments.length > 0 ? segments[0].start : trips[0]?.leave_time_min;
+  if (firstSegStart != null && firstSegStart > startMin) {
+    segments.unshift({
+      kind: 'deadhead',
+      start: startMin,
+      end: firstSegStart,
+      label: null,
+      meta: { kind: 'depot_filler' },
+    });
+    deadhead += firstSegStart - startMin;
+  }
+
   for (let idx = 0; idx < trips.length; idx++) {
     const t = trips[idx];
     const segStart = t.leave_time_min;
@@ -121,14 +166,63 @@ function buildSegmentsForPiece(piece, blocksIndex, signupKindToServiceGroups) {
       }
       const remaining = gap - loMin;
       if (remaining > 0) {
+        // Inter-trip positioning is paid working time without passengers.
+        // Tag it so the trip list shows it as a slate-coloured deadhead row.
         segments.push({
-          kind: 'gap',
+          kind: 'deadhead',
           start: segEnd + loMin,
           end: next.leave_time_min,
-          label: `${remaining}m positioning`,
+          label: `Positioning ${t.arrive_node} → ${next.leave_node} (${remaining}m)`,
+          meta: {
+            kind: 'positioning',
+            leave_node: t.arrive_node,
+            arrive_node: next.leave_node,
+          },
         });
+        deadhead += remaining;
       }
     }
+  }
+
+  // Pull-in (PIT): symmetric to POT. The bus arrives at the last trip's
+  // arrive_node, then deadheads back to the depot at pit_min.
+  if (
+    trips.length > 0 &&
+    trips[trips.length - 1] === block.trips[block.trips.length - 1] &&
+    trips[trips.length - 1].pit_min != null &&
+    trips[trips.length - 1].pit_node != null &&
+    trips[trips.length - 1].pit_min > trips[trips.length - 1].arrive_time_min
+  ) {
+    const tN = trips[trips.length - 1];
+    const dur = tN.pit_min - tN.arrive_time_min;
+    segments.push({
+      kind: 'deadhead',
+      start: tN.arrive_time_min,
+      end: tN.pit_min,
+      label: `Route ${tN.line ?? '?'} ${tN.arrive_node} → ${tN.pit_node}`,
+      meta: {
+        kind: 'pit',
+        line: tN.line,
+        leave_node: tN.arrive_node,
+        arrive_node: tN.pit_node,
+      },
+    });
+    deadhead += dur;
+  }
+
+  // Sign-off filler: time inside the piece after the last observed
+  // movement. Mirrors the sign-on filler.
+  const lastSegEnd =
+    segments.length > 0 ? segments[segments.length - 1].end : null;
+  if (lastSegEnd != null && lastSegEnd < adjEnd) {
+    segments.push({
+      kind: 'deadhead',
+      start: lastSegEnd,
+      end: adjEnd,
+      label: null,
+      meta: { kind: 'depot_filler' },
+    });
+    deadhead += adjEnd - lastSegEnd;
   }
 
   return {

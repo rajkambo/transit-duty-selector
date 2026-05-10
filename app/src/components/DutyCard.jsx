@@ -204,7 +204,12 @@ function DutyDetails({ duty }) {
           )}
           <ol className="mt-2 text-sm text-slate-700 font-mono">
             {p.segments
-              .filter((s) => s.kind === 'driving' || s.kind === 'deadhead')
+              .filter(
+                (s) =>
+                  s.label != null &&
+                  (s.kind === 'driving' || s.kind === 'deadhead') &&
+                  s.meta?.kind !== 'depot_filler',
+              )
               .map((s, i) => (
                 <li key={i}>
                   {minutesToClock(s.start)}–{minutesToClock(s.end)}{' '}

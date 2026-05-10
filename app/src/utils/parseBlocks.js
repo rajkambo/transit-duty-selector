@@ -17,10 +17,10 @@ const HEADER_RE =
 const TIME_TOKEN_RE = /^\d{3,4}$/;
 const BLOCK_TOKEN_RE = /^\d{1,4}$/;
 const NODE_TOKEN_RE = /^[A-Z0-9][A-Z0-9\-]*$/;
-// A pure-digit token < 3 digits is way too small to be a node code (real node
-// codes like 8812, 5876, 6452 are always 4 digits). Such short numbers are
-// almost always layover minutes or line numbers in the column tail.
-const SHORT_NUMERIC_RE = /^\d{1,2}$/;
+// All bare-numeric node codes observed in CMBC data are 4 digits (8812, 5264,
+// 5876, 6452, 6484, 6804). Anything 1-3 digits that's pure numeric is a Lo,
+// Dhd, or Line value in the column tail — not a node.
+const SHORT_NUMERIC_RE = /^\d{1,3}$/;
 
 function isTime(tok) {
   return TIME_TOKEN_RE.test(tok);
@@ -71,18 +71,27 @@ function parseTripRow(tokens, ctx) {
   const blockNumber = tokens[0];
   let i = 1;
 
-  // Read alternating (node, time) pairs. There must be at least 2 (Lv, Arr).
+  // Read up to 3 (node, optional-time) pairs. The Mid Node may have a blank
+  // Mid Time column in the source PDF (it appears as just two adjacent node
+  // tokens), so the time slot is optional. Lv and Arr must have times.
   const pairs = [];
-  while (i < tokens.length) {
+  while (i < tokens.length && pairs.length < 3) {
     const node = tokens[i];
-    const time = tokens[i + 1];
     if (!looksLikeNode(node)) break;
-    if (!time || !isTime(time)) break;
-    pairs.push({ node, time });
-    i += 2;
-    if (pairs.length === 3) break; // At most Lv, Mid, Arr.
+    i += 1;
+    const next = tokens[i];
+    if (next != null && isTime(next)) {
+      pairs.push({ node, time: next });
+      i += 1;
+    } else {
+      // Mid time is blank — record the node with no time and continue.
+      pairs.push({ node, time: null });
+    }
   }
   if (pairs.length < 2) return null;
+  // Lv (first) and Arr (last) must have real times.
+  if (!pairs[0].time) return null;
+  if (!pairs[pairs.length - 1].time) return null;
 
   const tail = tokens.slice(i);
 
@@ -116,13 +125,16 @@ function parseTripRow(tokens, ctx) {
   const numerics = work.filter((t) => /^\d+$/.test(t));
 
   let remaining;
+  // The last numeric in the tail is POT (first row of block) or PIT (last
+  // row of block). We don't know which from this row alone — preserve it as
+  // tail_time_min and let parseBlockReport's post-processing assign it.
+  let tailTimeMin = null;
   if (trailingAlpha) {
-    // Last numeric is POT/PIT, second-to-last is Line.
     if (numerics.length >= 2) {
       lineNumber = numerics[numerics.length - 2];
+      tailTimeMin = clockMin(numerics[numerics.length - 1]);
       remaining = numerics.slice(0, numerics.length - 2);
     } else if (numerics.length === 1) {
-      // Unusual — treat the lone numeric as Line.
       lineNumber = numerics[0];
       remaining = [];
     } else {
@@ -150,7 +162,7 @@ function parseTripRow(tokens, ctx) {
     leave_time: timeFromRaw(leave.time),
     leave_time_min: clockMin(leave.time),
     mid_node: mid?.node ?? null,
-    mid_time: mid ? timeFromRaw(mid.time) : null,
+    mid_time: mid?.time ? timeFromRaw(mid.time) : null,
     arrive_node: arrive.node,
     arrive_time: timeFromRaw(arrive.time),
     arrive_time_min: clockMin(arrive.time),
@@ -158,6 +170,11 @@ function parseTripRow(tokens, ctx) {
     deadhead_line: dhdLine,
     line: lineNumber,
     depot,
+    // Raw tail metadata. POT/POG live on the first row of a block,
+    // PIT/PIG on the last row. We assign in post-processing once trips
+    // are sorted.
+    tail_depot: trailingAlpha,
+    tail_time_min: tailTimeMin,
     service_group: ctx.serviceGroup,
     line_group: ctx.lineGroup,
   };
@@ -210,9 +227,23 @@ export function parseBlockReport(lines, fileName = '') {
   }
 
   const blocks = [...tripsByKey.values()];
-  // Sort each block's trips by leave time so downstream logic can rely on order.
+  // Sort each block's trips by leave time so downstream logic can rely on
+  // order, then assign POT/POG to the first row's tail metadata and
+  // PIT/PIG to the last row's. A single-trip block gets both from the
+  // same row.
   for (const b of blocks) {
     b.trips.sort((a, c) => a.leave_time_min - c.leave_time_min);
+    if (!b.trips.length) continue;
+    const first = b.trips[0];
+    const last = b.trips[b.trips.length - 1];
+    if (first.tail_time_min != null) {
+      first.pot_min = first.tail_time_min;
+      first.pot_node = first.tail_depot;
+    }
+    if (last.tail_time_min != null) {
+      last.pit_min = last.tail_time_min;
+      last.pit_node = last.tail_depot;
+    }
   }
   return { blocks, service_group: serviceGroup };
 }
