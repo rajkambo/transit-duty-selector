@@ -1,0 +1,31 @@
+# macOS
+.DS_Store
+
+# Cursor
+.cursor/
+
+# Build artefacts
+**/node_modules/
+**/dist/
+**/dist-ssr/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Editor / OS
+.vscode/*
+!.vscode/extensions.json
+.idea
+*.swp
+
+# Local-only env
+*.local
+.env
+.env.*
+
+# Sample schedule PDFs — these contain real operator data; keep them local.
+# Remove the next line if you genuinely want to commit sample PDFs.
+*.pdf

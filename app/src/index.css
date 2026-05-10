@@ -1,0 +1,52 @@
+@import "tailwindcss";
+
+@theme {
+  --color-driving: #2563eb;
+  --color-driving-soft: #dbeafe;
+  --color-deadhead: #6b7280;
+  --color-deadhead-soft: #e5e7eb;
+  --color-layover: #f59e0b;
+  --color-layover-soft: #fef3c7;
+  --color-bonus: #16a34a;
+  --color-bonus-soft: #dcfce7;
+}
+
+:root {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, sans-serif;
+  color-scheme: light;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  background-color: #f8fafc;
+  color: #0f172a;
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+button {
+  font-family: inherit;
+}
+
+/* Improve focus visibility for accessibility */
+*:focus-visible {
+  outline: 3px solid #2563eb;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Print styles for "My Choices" view */
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  body {
+    background: white;
+  }
+}
