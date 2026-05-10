@@ -12,8 +12,13 @@
 //    Columns: Date Div Duty Type From Start End To Working Paid Details
 //    (Note the swap: working time is BEFORE paid time on this layout.)
 
+// The trailing colon after the daily-duty number is present in the
+// canonical form `(363: STC 04:12-11:05 SUST)`, but PDFs annotate
+// "school days only" / "school days on" entries as `(367 <SD> STC ...)`
+// or `(404 <SDon> STC ...)` with NO colon. Make the colon optional so
+// both shapes match.
 const DUTY_DETAIL_RE =
-  /\[(\d+)-(\d+)\]\(\s*(\d+)(?:\s*<[^>]*>)?\s*:\s*([A-Z0-9][A-Z0-9 \-]*?)\s+(\d{1,2}:\d{2})-(\d{1,2}:\d{2})\s+([A-Z0-9][A-Z0-9 \-]*?)\s*\)/g;
+  /\[(\d+)-(\d+)\]\(\s*(\d+)(?:\s*<[^>]*>)?\s*:?\s*([A-Z0-9][A-Z0-9 \-]*?)\s+(\d{1,2}:\d{2})-(\d{1,2}:\d{2})\s+([A-Z0-9][A-Z0-9 \-]*?)\s*\)/g;
 
 const WEEKDAY_DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
 
@@ -33,6 +38,49 @@ function extractPieces(line) {
   return pieces;
 }
 
+function buildProfiles(pieces, dayAssignments) {
+  // Group pieces by their daily_duty_number. Each group becomes a "profile"
+  // that represents one daily shift assignment. For most rosters there is
+  // exactly one daily_duty_number so there's a single profile, but
+  // split-week rosters (e.g. 7018 in the weekday signup) carry two or
+  // three daily duty numbers in the same row.
+  //
+  // dayAssignments: [{day, value}] where value is "OFF" or a daily-duty-
+  // number string. working_days for a profile is the days whose value
+  // matches the profile's daily_duty_number.
+  const groups = new Map();
+  for (const piece of pieces) {
+    const key = piece.daily_duty_number;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(piece);
+  }
+
+  const profiles = [];
+  for (const [dailyDutyNumber, groupPieces] of groups) {
+    const workingDays = dayAssignments
+      .filter((da) => da.value === dailyDutyNumber)
+      .map((da) => da.day);
+    profiles.push({
+      daily_duty_number: dailyDutyNumber,
+      working_days: workingDays,
+      pieces: groupPieces,
+    });
+  }
+  // Stable order: by first working day (so Mon-only daily appears before
+  // Thu+Fri daily in the duty card).
+  const dayOrder = new Map(WEEKDAY_DAY_LABELS.map((d, i) => [d, i]));
+  profiles.sort((a, b) => {
+    const ai = a.working_days.length
+      ? Math.min(...a.working_days.map((d) => dayOrder.get(d) ?? 99))
+      : 99;
+    const bi = b.working_days.length
+      ? Math.min(...b.working_days.map((d) => dayOrder.get(d) ?? 99))
+      : 99;
+    return ai - bi;
+  });
+  return profiles;
+}
+
 function parseWeekdayLine(line) {
   // Strip any leading wrapped duty-details so the column regex works.
   const stripped = line.replace(/^(\s*\[[^\]]+\]\([^)]+\)(?:\s*,\s*\[[^\]]+\]\([^)]+\))*)\s*/, '');
@@ -50,21 +98,28 @@ function parseWeekdayLine(line) {
   // signup PDF doesn't document them — drivers pick a separate Saturday
   // and Sunday duty for the weekend if they want to work those days.
   const days_off = [];
-  WEEKDAY_DAY_LABELS.forEach((label, i) => {
-    if (/^OFF$/i.test(dayCols[i])) days_off.push(label);
+  const dayAssignments = WEEKDAY_DAY_LABELS.map((label, i) => {
+    const value = dayCols[i];
+    if (/^OFF$/i.test(value)) {
+      days_off.push(label);
+      return { day: label, value: 'OFF' };
+    }
+    return { day: label, value };
   });
 
   const pieces = extractPieces(line);
   if (!pieces.length) return null;
 
+  const profiles = buildProfiles(pieces, dayAssignments);
+
   return {
     roster_number: roster,
-    daily_duty_number: pieces[0]?.daily_duty_number ?? null,
+    daily_duty_number: profiles[0]?.daily_duty_number ?? null,
     duty_type: dutyType,
     paid_time: paidTime,
     working_time: workingTime,
     days_off,
-    pieces,
+    profiles,
     signup_kind: 'weekday',
   };
 }
@@ -85,14 +140,25 @@ function parseWeekendLine(line, signupKind) {
   // covered by this signup.)
   const days_off = [];
 
+  // Weekend signups always have a single daily_duty_number per row, so
+  // there is always exactly one profile.
+  const dayLabel = signupKind === 'saturday' ? 'Sat' : 'Sun';
+  const profiles = [
+    {
+      daily_duty_number: pieces[0]?.daily_duty_number ?? duty,
+      working_days: [dayLabel],
+      pieces,
+    },
+  ];
+
   return {
     roster_number: duty, // No multi-digit roster on weekends; reuse the duty number.
-    daily_duty_number: pieces[0]?.daily_duty_number ?? duty,
+    daily_duty_number: profiles[0].daily_duty_number,
     duty_type: dutyType,
     paid_time: paidTime,
     working_time: workingTime,
     days_off,
-    pieces,
+    profiles,
     signup_kind: signupKind,
   };
 }
@@ -116,10 +182,51 @@ function detectSignupKind(lines, fileName = '') {
   return 'weekday';
 }
 
+const ROW_PREFIX_RE = /\b\d{1,2}[A-Z]{3}\s+[A-Z]{2,4}\s+\d{3,5}\s+[A-Z]{2,5}\s+\d+h\d{1,2}\s+\d+h\d{1,2}/;
+
+/**
+ * Some signup rows have so many duty-detail pieces that the column wraps
+ * onto a separate visual line ABOVE the row prefix, e.g.
+ *
+ *   "[801-29](284 ...), [320-14](284 ...), [801-28](285 ...),"
+ *   "26JUN STC 7063 REG 26h42 25h09 284 284 OFF OFF 285 ... [321-15](285 ...)"
+ *
+ * Each line is independent in the PDF text stream. We merge a
+ * "continuation line" (has duty-detail brackets but no row prefix) into
+ * the FOLLOWING row line so all pieces are visible to the row parser.
+ */
+function mergeWrappedDutyLines(lines) {
+  const out = [];
+  let buffer = '';
+  for (const line of lines) {
+    const hasDetails = /\[\d+-\d+\]\(/.test(line);
+    const hasRowPrefix = ROW_PREFIX_RE.test(line);
+    if (hasDetails && !hasRowPrefix) {
+      // Pure duty-detail continuation; hold for the next row line.
+      buffer = buffer ? `${buffer} ${line}` : line;
+      continue;
+    }
+    if (hasRowPrefix && buffer) {
+      out.push(`${buffer} ${line}`);
+      buffer = '';
+      continue;
+    }
+    if (buffer) {
+      // Lost the buffer (e.g. a header line interrupted the wrap). Drop
+      // it rather than mis-attribute it.
+      buffer = '';
+    }
+    out.push(line);
+  }
+  if (buffer) out.push(buffer);
+  return out;
+}
+
 export function parseSignupRef(lines, fileName = '') {
   const kind = detectSignupKind(lines, fileName);
+  const merged = kind === 'weekday' ? mergeWrappedDutyLines(lines) : lines;
   const duties = [];
-  for (const line of lines) {
+  for (const line of merged) {
     if (!/\[\d+-\d+\]\(/.test(line)) continue;
     const duty =
       kind === 'weekday'

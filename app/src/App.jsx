@@ -6,7 +6,11 @@ import SavedDuties from './components/SavedDuties.jsx';
 import { joinData } from './utils/joinData.js';
 import { DAY_LABELS } from './utils/timeUtils.js';
 
-const SAVED_KEY = 'tds.savedDuties.v1';
+// v2 because we changed the duty id format from
+// `<kind>-<roster>-<daily>` (one per daily duty within a split-week roster)
+// to `<kind>-<roster>` (one per roster). Old saved ids would silently
+// fail to resolve under the new shape, so the bump clears stale state.
+const SAVED_KEY = 'tds.savedDuties.v2';
 const FILTERS_KEY = 'tds.filters.v1';
 
 const DEFAULT_FILTERS = {
@@ -285,14 +289,24 @@ function filterMatch(d, f) {
       .map((t) => t.trim())
       .filter(Boolean);
     if (tokens.length) {
+      // For split-week rosters, all profile-level identifiers are
+      // searchable so e.g. roster 7018 (primary daily 65) is found by
+      // searching for "78" too.
+      const profileBits = (d.profiles ?? []).flatMap((p) => [
+        p.daily_duty_number,
+        p.start_location,
+        p.end_location,
+      ]);
       const haystack = [
         d.roster_number,
         d.daily_duty_number,
         d.duty_type,
         d.start_location,
         d.end_location,
+        ...profileBits,
         ...(d.routes ?? []),
       ]
+        .filter(Boolean)
         .join(' ')
         .toLowerCase();
       // Multi-token search is OR-matching: a duty matches if ANY of the

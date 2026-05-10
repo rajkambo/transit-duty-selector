@@ -12,11 +12,21 @@ const COLORS = {
 /**
  * A Gantt-style timeline. Pieces are merged with split breaks shown as empty
  * (white) space. Width is mapped from minutes-since-shift-start.
+ *
+ * Accepts the segments to draw via `piecesEnriched`, plus the explicit
+ * earliest/latest bounds to scale against. The caller (DutyCard) renders
+ * one of these per per-day profile so split-week rosters get one timeline
+ * for each daily duty.
  */
-export default function VisualTimeline({ duty }) {
-  const start = duty.earliest_start_min;
-  const end = duty.latest_end_min;
-  if (start == null || end == null || end <= start) {
+export default function VisualTimeline({
+  piecesEnriched,
+  earliestStart,
+  latestEnd,
+  showLegend = true,
+}) {
+  const start = earliestStart;
+  const end = latestEnd;
+  if (start == null || end == null || end <= start || !piecesEnriched?.length) {
     return (
       <p className="text-base text-slate-500 italic">
         No timeline data available.
@@ -27,9 +37,9 @@ export default function VisualTimeline({ duty }) {
 
   // Build merged segment list across pieces, with explicit "split break" gaps.
   const merged = [];
-  duty.pieces_enriched.forEach((p, idx) => {
+  piecesEnriched.forEach((p, idx) => {
     if (idx > 0) {
-      const prev = duty.pieces_enriched[idx - 1];
+      const prev = piecesEnriched[idx - 1];
       const gap = p.start_min - prev.end_min;
       if (gap > 0) {
         merged.push({
@@ -67,7 +77,7 @@ export default function VisualTimeline({ duty }) {
         <span>{minutesToClock(start)}</span>
         <span>{minutesToClock(end)}</span>
       </div>
-      <Legend />
+      {showLegend && <Legend />}
     </div>
   );
 }

@@ -1,6 +1,10 @@
 import { useState } from 'react';
 import VisualTimeline from './VisualTimeline.jsx';
-import { DAY_LABELS, minutesToDurationHHhMM, minutesToClock } from '../utils/timeUtils.js';
+import {
+  DAY_LABELS,
+  minutesToDurationHHhMM,
+  minutesToClock,
+} from '../utils/timeUtils.js';
 
 function fmtMin(m) {
   if (m == null) return '—';
@@ -52,16 +56,27 @@ export default function DutyCard({ duty, saved, onToggleSave }) {
           ? 'Sunday only'
           : null;
 
+  const profiles = duty.profiles ?? [];
+  const isSplitWeek = profiles.length > 1;
+  // Title strategy: for split-week rosters we lead with the roster number
+  // since "Duty #65" alone hides that the same slot also includes daily 78.
+  const titleNumber = isSplitWeek
+    ? duty.roster_number
+    : (duty.daily_duty_number ?? duty.roster_number);
+  const titlePrefix = isSplitWeek ? 'Roster' : 'Duty';
+
   return (
     <article className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="text-2xl font-semibold text-slate-900">
-            Duty <span className="font-mono">#{duty.daily_duty_number ?? duty.roster_number}</span>
+            {titlePrefix}{' '}
+            <span className="font-mono">#{titleNumber}</span>
           </h3>
           <p className="text-base text-slate-600 mt-0.5">
-            Roster {duty.roster_number} · {shiftCategoryLabel(duty.shift_category)} (
-            {duty.duty_type})
+            {isSplitWeek
+              ? `Roster ${duty.roster_number} · ${shiftCategoryLabel(duty.shift_category)} (${duty.duty_type}) · ${profiles.length} different daily duties`
+              : `Roster ${duty.roster_number} · ${shiftCategoryLabel(duty.shift_category)} (${duty.duty_type})`}
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
@@ -82,8 +97,18 @@ export default function DutyCard({ duty, saved, onToggleSave }) {
       </header>
 
       <dl className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-y-3 gap-x-4">
-        <Stat label="Start" value={minutesToClock(duty.earliest_start_min)} mono />
-        <Stat label="End" value={minutesToClock(duty.latest_end_min)} mono />
+        <Stat
+          label="Start"
+          value={minutesToClock(duty.earliest_start_min)}
+          sub={isSplitWeek ? 'earliest' : null}
+          mono
+        />
+        <Stat
+          label="End"
+          value={minutesToClock(duty.latest_end_min)}
+          sub={isSplitWeek ? 'latest' : null}
+          mono
+        />
         <Stat
           label="Paid (per shift)"
           value={fmtMin(duty.paid_min)}
@@ -114,6 +139,11 @@ export default function DutyCard({ duty, saved, onToggleSave }) {
             {duty.same_depot && (
               <span className="ml-1 text-emerald-700 text-sm">(same)</span>
             )}
+            {isSplitWeek && (
+              <span className="block text-xs text-slate-500">
+                (varies by daily duty - see below)
+              </span>
+            )}
           </dd>
         </div>
         <div>
@@ -137,18 +167,18 @@ export default function DutyCard({ duty, saved, onToggleSave }) {
         </div>
       </dl>
 
-      <div className="mt-4">
-        <VisualTimeline duty={duty} />
-      </div>
-
-      <div className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-y-2 gap-x-4 text-sm text-slate-600">
-        <span>Driving: <strong>{fmtMin(duty.driving_min)}</strong></span>
-        <span>Deadhead: <strong>{fmtMin(duty.deadhead_min)}</strong></span>
-        <span>Layover: <strong>{fmtMin(duty.layover_min)}</strong></span>
-        <span>
-          Split break:{' '}
-          <strong>{duty.split_break_min > 0 ? fmtMin(duty.split_break_min) : '—'}</strong>
-        </span>
+      {/* Per-profile sections. For single-profile duties this renders just
+          one section without a header so the visual remains identical to
+          before. */}
+      <div className="mt-4 space-y-5">
+        {profiles.map((profile, i) => (
+          <ProfileSection
+            key={profile.daily_duty_number}
+            profile={profile}
+            showHeader={isSplitWeek}
+            showLegend={i === 0}
+          />
+        ))}
       </div>
 
       <button
@@ -160,8 +190,64 @@ export default function DutyCard({ duty, saved, onToggleSave }) {
         {open ? 'Hide' : 'Show'} layovers and trip details
       </button>
 
-      {open && <DutyDetails duty={duty} />}
+      {open && (
+        <div className="mt-4 border-t border-slate-200 pt-4 space-y-5">
+          {profiles.map((profile) => (
+            <ProfileTripDetails
+              key={profile.daily_duty_number}
+              profile={profile}
+              showHeader={isSplitWeek}
+            />
+          ))}
+        </div>
+      )}
     </article>
+  );
+}
+
+function ProfileSection({ profile, showHeader, showLegend }) {
+  return (
+    <section>
+      {showHeader && (
+        <h4 className="text-lg font-semibold text-slate-900 mb-2">
+          Daily duty <span className="font-mono">{profile.daily_duty_number}</span>
+          <span className="ml-2 text-base font-normal text-slate-600">
+            — works {profile.working_days.join(', ') || '—'}
+          </span>
+        </h4>
+      )}
+      <VisualTimeline
+        piecesEnriched={profile.pieces_enriched}
+        earliestStart={profile.earliest_start_min}
+        latestEnd={profile.latest_end_min}
+        showLegend={showLegend}
+      />
+      <div className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-y-2 gap-x-4 text-sm text-slate-600">
+        <span>
+          Driving: <strong>{fmtMin(profile.driving_min)}</strong>
+        </span>
+        <span>
+          Deadhead: <strong>{fmtMin(profile.deadhead_min)}</strong>
+        </span>
+        <span>
+          Layover: <strong>{fmtMin(profile.layover_min)}</strong>
+        </span>
+        <span>
+          Split break:{' '}
+          <strong>
+            {profile.split_break_min > 0 ? fmtMin(profile.split_break_min) : '—'}
+          </strong>
+        </span>
+      </div>
+      {showHeader && (
+        <p className="mt-2 text-sm text-slate-600 font-mono">
+          {profile.start_location} → {profile.end_location}
+          {profile.same_depot && (
+            <span className="ml-1 text-emerald-700 text-xs">(same depot)</span>
+          )}
+        </p>
+      )}
+    </section>
   );
 }
 
@@ -177,16 +263,22 @@ function Stat({ label, value, sub, mono }) {
   );
 }
 
-function DutyDetails({ duty }) {
+function ProfileTripDetails({ profile, showHeader }) {
   return (
-    <div className="mt-4 border-t border-slate-200 pt-4 space-y-4">
-      {duty.pieces_enriched.map((p, idx) => (
+    <div className="space-y-4">
+      {showHeader && (
+        <h4 className="text-base font-semibold text-slate-900">
+          Daily duty {profile.daily_duty_number} ·{' '}
+          {profile.working_days.join(', ') || '—'}
+        </h4>
+      )}
+      {profile.pieces_enriched.map((p, idx) => (
         <div key={idx}>
-          <h4 className="text-base font-semibold text-slate-900">
+          <h5 className="text-base font-semibold text-slate-900">
             Piece {idx + 1}: Block {p.piece.line_group}-{p.piece.block_number} (
             {p.piece.start_time} {p.piece.start_location} → {p.piece.end_time}{' '}
             {p.piece.end_location})
-          </h4>
+          </h5>
           {!p.block_found && (
             <p className="text-base text-rose-700 mt-1">
               No matching block found. Make sure you uploaded the matching

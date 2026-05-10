@@ -260,30 +260,132 @@ export function joinData(parsedSignups, parsedBlockReports) {
   for (const sig of parsedSignups) {
     const sgOrder = signupKindServiceGroupOrder(sig.signup_kind);
     for (const duty of sig.duties) {
-      const piecesEnriched = duty.pieces.map((p) =>
-        buildSegmentsForPiece(p, blocksIndex, sgOrder),
+      // Enrich each profile independently. A profile represents one daily
+      // shift assignment (e.g. for split-week roster 7018 there are two:
+      // daily 65 worked Thu/Fri, daily 78 worked Mon).
+      const profilesEnriched = (duty.profiles ?? []).map((profile) => {
+        const piecesEnriched = profile.pieces.map((p) =>
+          buildSegmentsForPiece(p, blocksIndex, sgOrder),
+        );
+        const sortedPieces = [...piecesEnriched]
+          .filter(Boolean)
+          .sort((a, b) => a.start_min - b.start_min);
+
+        let splitBreakMin = 0;
+        for (let i = 1; i < sortedPieces.length; i++) {
+          const gap =
+            sortedPieces[i].start_min - sortedPieces[i - 1].end_min;
+          if (gap > 0) splitBreakMin += gap;
+        }
+
+        const drivingMin = sortedPieces.reduce(
+          (a, p) => a + p.driving_min,
+          0,
+        );
+        const deadheadMin = sortedPieces.reduce(
+          (a, p) => a + p.deadhead_min,
+          0,
+        );
+        const layoverMin = sortedPieces.reduce(
+          (a, p) => a + p.layover_min,
+          0,
+        );
+        const routes = new Set();
+        for (const p of sortedPieces) for (const r of p.routes) routes.add(r);
+
+        const earliestStart = sortedPieces[0]?.start_min ?? null;
+        const latestEnd =
+          sortedPieces[sortedPieces.length - 1]?.end_min ?? null;
+        const totalSpanMin =
+          earliestStart != null && latestEnd != null
+            ? latestEnd - earliestStart
+            : null;
+
+        const startLocation = profile.pieces[0]?.start_location ?? null;
+        const endLocation =
+          profile.pieces[profile.pieces.length - 1]?.end_location ?? null;
+        const sameDepot =
+          startLocation && endLocation && startLocation === endLocation;
+
+        return {
+          daily_duty_number: profile.daily_duty_number,
+          working_days: profile.working_days,
+          pieces: profile.pieces,
+          pieces_enriched: piecesEnriched,
+          driving_min: drivingMin,
+          deadhead_min: deadheadMin,
+          layover_min: layoverMin,
+          split_break_min: splitBreakMin,
+          earliest_start_min: earliestStart,
+          latest_end_min: latestEnd,
+          total_span_min: totalSpanMin,
+          start_location: startLocation,
+          end_location: endLocation,
+          same_depot: sameDepot,
+          routes: [...routes].sort(),
+        };
+      });
+
+      // Aggregate duty-level fields. Per-shift metrics are weighted
+      // averages by working_days.length so split-week duties don't
+      // appear to have impossibly long shifts (the bug we are fixing).
+      const totalWorkingDays = profilesEnriched.reduce(
+        (a, p) => a + p.working_days.length,
+        0,
       );
+      const denom = totalWorkingDays > 0 ? totalWorkingDays : 1;
 
-      // Compute split break(s) between consecutive pieces.
-      const sortedPieces = [...piecesEnriched]
-        .filter(Boolean)
-        .sort((a, b) => a.start_min - b.start_min);
+      const weightedAvg = (key) =>
+        profilesEnriched.reduce(
+          (a, p) => a + p[key] * p.working_days.length,
+          0,
+        ) / denom;
 
-      let splitBreakMin = 0;
-      for (let i = 1; i < sortedPieces.length; i++) {
-        const gap = sortedPieces[i].start_min - sortedPieces[i - 1].end_min;
-        if (gap > 0) splitBreakMin += gap;
-      }
+      const drivingMin = Math.round(weightedAvg('driving_min'));
+      const deadheadMin = Math.round(weightedAvg('deadhead_min'));
+      const layoverMin = Math.round(weightedAvg('layover_min'));
+      const splitBreakMin = Math.round(weightedAvg('split_break_min'));
 
-      const drivingMin = sortedPieces.reduce((a, p) => a + p.driving_min, 0);
-      const deadheadMin = sortedPieces.reduce((a, p) => a + p.deadhead_min, 0);
-      const layoverMin = sortedPieces.reduce((a, p) => a + p.layover_min, 0);
+      // Earliest/latest across all profiles (so the duty's overall span
+      // covers the broadest window any working day might face).
+      const earliestStart = profilesEnriched.reduce(
+        (acc, p) =>
+          p.earliest_start_min == null
+            ? acc
+            : acc == null
+              ? p.earliest_start_min
+              : Math.min(acc, p.earliest_start_min),
+        null,
+      );
+      const latestEnd = profilesEnriched.reduce(
+        (acc, p) =>
+          p.latest_end_min == null
+            ? acc
+            : acc == null
+              ? p.latest_end_min
+              : Math.max(acc, p.latest_end_min),
+        null,
+      );
+      const totalSpanMin =
+        earliestStart != null && latestEnd != null
+          ? latestEnd - earliestStart
+          : null;
+
+      // Routes union across profiles.
       const routes = new Set();
-      for (const p of sortedPieces) for (const r of p.routes) routes.add(r);
+      for (const p of profilesEnriched) for (const r of p.routes) routes.add(r);
 
-      // Weekly totals as printed on the signup PDF (for weekday signups,
-      // these cover several days; for Saturday/Sunday signups they're
-      // already per-shift since each duty works only that one day).
+      // Stricter "same depot" — true only if every profile is same-depot.
+      const sameDepot =
+        profilesEnriched.length > 0 &&
+        profilesEnriched.every((p) => p.same_depot);
+
+      // Top-level location strings for the card header. Use the first
+      // profile (which is sorted by earliest working day in the parser).
+      const startLocation = profilesEnriched[0]?.start_location ?? null;
+      const endLocation = profilesEnriched[0]?.end_location ?? null;
+
+      // Weekly totals as printed on the signup PDF.
       const paidWeekMin = parseDurationHHhMM(duty.paid_time) ?? null;
       const workingWeekMin = parseDurationHHhMM(duty.working_time) ?? null;
       const bonusWeekMin =
@@ -291,9 +393,8 @@ export function joinData(parsedSignups, parsedBlockReports) {
           ? paidWeekMin - workingWeekMin
           : null;
 
-      // Each duty repeats the SAME set of pieces on every working day, so
-      // per-shift values are simply the totals divided by the number of
-      // working days within this signup's scope.
+      // Defensive check: working_days_count derived from row's "OFF" pattern
+      // should equal sum of profile working_days lengths.
       const coveredDays =
         COVERED_DAYS_BY_SIGNUP_KIND[sig.signup_kind] ?? [
           'Mon',
@@ -304,31 +405,24 @@ export function joinData(parsedSignups, parsedBlockReports) {
           'Sat',
           'Sun',
         ];
-      const workingDaysCount = Math.max(
+      const expectedWorkingDays = Math.max(
         0,
         coveredDays.length - duty.days_off.length,
       );
-      const denom = workingDaysCount > 0 ? workingDaysCount : 1;
+      if (expectedWorkingDays !== totalWorkingDays) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[joinData] working-day mismatch for roster ${duty.roster_number}: covered-days minus off=${expectedWorkingDays}, but profiles sum to ${totalWorkingDays}`,
+        );
+      }
+      const workingDaysCount = totalWorkingDays;
+
       const paidMin =
         paidWeekMin != null ? Math.round(paidWeekMin / denom) : null;
       const workingMin =
         workingWeekMin != null ? Math.round(workingWeekMin / denom) : null;
       const bonusMin =
         bonusWeekMin != null ? Math.round(bonusWeekMin / denom) : null;
-
-      const earliestStart = sortedPieces[0]?.start_min ?? null;
-      const latestEnd =
-        sortedPieces[sortedPieces.length - 1]?.end_min ?? null;
-      const totalSpanMin =
-        earliestStart != null && latestEnd != null
-          ? latestEnd - earliestStart
-          : null;
-
-      const startLocation = duty.pieces[0]?.start_location ?? null;
-      const endLocation =
-        duty.pieces[duty.pieces.length - 1]?.end_location ?? null;
-      const sameDepot =
-        startLocation && endLocation && startLocation === endLocation;
 
       const isSplit =
         SPLIT_TYPES.has(duty.duty_type) || splitBreakMin >= 60;
@@ -342,14 +436,25 @@ export function joinData(parsedSignups, parsedBlockReports) {
             ? 'straight'
             : 'other';
 
-      const dutyId = `${sig.signup_kind}-${duty.roster_number}-${duty.daily_duty_number ?? '0'}`;
+      // ID is now per-roster (no daily_duty_number), so split-week rosters
+      // get a single saved-duty entry that captures their whole package.
+      const dutyId = `${sig.signup_kind}-${duty.roster_number}`;
+
+      // Backwards-compat: a flat pieces_enriched list used by smoke.mjs and
+      // any older script. New code should use duty.profiles instead.
+      const flatPiecesEnriched = profilesEnriched.flatMap(
+        (p) => p.pieces_enriched,
+      );
 
       allDuties.push({
         ...duty,
         id: dutyId,
         signup_kind: sig.signup_kind,
         covered_days: coveredDays,
-        pieces_enriched: piecesEnriched,
+        profiles: profilesEnriched,
+        // Read-only flat shim; do not write through. Kept for older
+        // consumers that read pieces_enriched directly.
+        pieces_enriched: flatPiecesEnriched,
         driving_min: drivingMin,
         deadhead_min: deadheadMin,
         layover_min: layoverMin,

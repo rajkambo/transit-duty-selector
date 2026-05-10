@@ -16,8 +16,14 @@ async function copyToClipboard(text) {
 function buildPlainText(duties) {
   const lines = ['MY SHORTLISTED DUTIES', ''];
   for (const d of duties) {
+    const profiles = d.profiles ?? [];
+    const isSplitWeek = profiles.length > 1;
+    const titleNum = isSplitWeek
+      ? d.roster_number
+      : (d.daily_duty_number ?? d.roster_number);
+    const titlePrefix = isSplitWeek ? 'Roster' : 'Duty';
     lines.push(
-      `Duty #${d.daily_duty_number ?? d.roster_number} (Roster ${d.roster_number}) — ${d.duty_type}`,
+      `${titlePrefix} #${titleNum} (Roster ${d.roster_number}) — ${d.duty_type}`,
     );
     lines.push(
       `  ${minutesToClock(d.earliest_start_min)} → ${minutesToClock(d.latest_end_min)} | Paid ${fmt(d.paid_min)}/shift (${fmt(d.paid_week_min)}/wk) · Working ${fmt(d.working_min)}/shift · Bonus +${fmt(d.bonus_min ?? 0)}/shift`,
@@ -25,13 +31,21 @@ function buildPlainText(duties) {
     lines.push(
       `  Routes: ${d.routes.join(', ') || '—'} | Days off: ${d.days_off.join(', ') || '—'}`,
     );
-    lines.push(
-      `  ${d.start_location} → ${d.end_location}${d.same_depot ? ' (same depot)' : ''}`,
-    );
-    for (const p of d.pieces_enriched) {
-      lines.push(
-        `    Block ${p.piece.line_group}-${p.piece.block_number}: ${p.piece.start_time} ${p.piece.start_location} → ${p.piece.end_time} ${p.piece.end_location}`,
-      );
+    for (const profile of profiles) {
+      if (isSplitWeek) {
+        lines.push(
+          `  On ${profile.working_days.join(', ') || '—'} (daily ${profile.daily_duty_number}): ${profile.start_location} → ${profile.end_location}${profile.same_depot ? ' (same depot)' : ''}`,
+        );
+      } else {
+        lines.push(
+          `  ${profile.start_location} → ${profile.end_location}${profile.same_depot ? ' (same depot)' : ''}`,
+        );
+      }
+      for (const p of profile.pieces_enriched) {
+        lines.push(
+          `    Block ${p.piece.line_group}-${p.piece.block_number}: ${p.piece.start_time} ${p.piece.start_location} → ${p.piece.end_time} ${p.piece.end_location}`,
+        );
+      }
     }
     lines.push('');
   }
@@ -88,48 +102,81 @@ export default function SavedDuties({ duties, onUnsave, onClose }) {
       </header>
 
       <ul className="space-y-3">
-        {duties.map((d) => (
-          <li
-            key={d.id}
-            className="bg-white border border-slate-200 rounded-2xl p-4"
-          >
-            <div className="flex flex-wrap items-baseline justify-between gap-2">
-              <h3 className="text-xl font-semibold text-slate-900">
-                Duty #{d.daily_duty_number ?? d.roster_number}{' '}
-                <span className="text-base font-normal text-slate-600">
-                  (Roster {d.roster_number} · {d.duty_type})
-                </span>
-              </h3>
-              <button
-                type="button"
-                onClick={() => onUnsave(d.id)}
-                className="text-base text-rose-700 underline no-print"
-              >
-                Remove
-              </button>
-            </div>
-            <p className="text-base text-slate-800 font-mono mt-1">
-              {minutesToClock(d.earliest_start_min)} → {minutesToClock(d.latest_end_min)} ·
-              Paid {fmt(d.paid_min)}/shift · Working {fmt(d.working_min)}/shift ·
-              Bonus +{fmt(d.bonus_min ?? 0)}/shift
-            </p>
-            <p className="text-base text-slate-700 mt-1">
-              Routes: <span className="font-mono">{d.routes.join(', ') || '—'}</span> ·
-              Days off: {d.days_off.join(', ') || '—'} · {d.start_location} →{' '}
-              {d.end_location}
-              {d.same_depot && ' (same depot)'}
-            </p>
-            <ul className="mt-2 text-sm text-slate-600 font-mono">
-              {d.pieces_enriched.map((p, i) => (
-                <li key={i}>
-                  Block {p.piece.line_group}-{p.piece.block_number}:{' '}
-                  {p.piece.start_time} {p.piece.start_location} →{' '}
-                  {p.piece.end_time} {p.piece.end_location}
-                </li>
+        {duties.map((d) => {
+          const profiles = d.profiles ?? [];
+          const isSplitWeek = profiles.length > 1;
+          const titleNum = isSplitWeek
+            ? d.roster_number
+            : (d.daily_duty_number ?? d.roster_number);
+          const titlePrefix = isSplitWeek ? 'Roster' : 'Duty';
+          return (
+            <li
+              key={d.id}
+              className="bg-white border border-slate-200 rounded-2xl p-4"
+            >
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <h3 className="text-xl font-semibold text-slate-900">
+                  {titlePrefix} #{titleNum}{' '}
+                  <span className="text-base font-normal text-slate-600">
+                    (Roster {d.roster_number} · {d.duty_type}
+                    {isSplitWeek && ` · ${profiles.length} daily duties`})
+                  </span>
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => onUnsave(d.id)}
+                  className="text-base text-rose-700 underline no-print"
+                >
+                  Remove
+                </button>
+              </div>
+              <p className="text-base text-slate-800 font-mono mt-1">
+                {minutesToClock(d.earliest_start_min)} →{' '}
+                {minutesToClock(d.latest_end_min)} · Paid {fmt(d.paid_min)}
+                /shift · Working {fmt(d.working_min)}/shift · Bonus +
+                {fmt(d.bonus_min ?? 0)}/shift
+              </p>
+              <p className="text-base text-slate-700 mt-1">
+                Routes:{' '}
+                <span className="font-mono">{d.routes.join(', ') || '—'}</span>{' '}
+                · Days off: {d.days_off.join(', ') || '—'}
+              </p>
+              {profiles.map((profile) => (
+                <div key={profile.daily_duty_number} className="mt-2">
+                  {isSplitWeek && (
+                    <p className="text-base text-slate-700">
+                      On {profile.working_days.join(', ') || '—'} (daily{' '}
+                      {profile.daily_duty_number}):{' '}
+                      <span className="font-mono">
+                        {profile.start_location} → {profile.end_location}
+                      </span>
+                      {profile.same_depot && (
+                        <span className="text-emerald-700"> (same)</span>
+                      )}
+                    </p>
+                  )}
+                  {!isSplitWeek && (
+                    <p className="text-base text-slate-700 font-mono">
+                      {profile.start_location} → {profile.end_location}
+                      {profile.same_depot && (
+                        <span className="text-emerald-700"> (same)</span>
+                      )}
+                    </p>
+                  )}
+                  <ul className="mt-1 text-sm text-slate-600 font-mono">
+                    {profile.pieces_enriched.map((p, i) => (
+                      <li key={i}>
+                        Block {p.piece.line_group}-{p.piece.block_number}:{' '}
+                        {p.piece.start_time} {p.piece.start_location} →{' '}
+                        {p.piece.end_time} {p.piece.end_location}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               ))}
-            </ul>
-          </li>
-        ))}
+            </li>
+          );
+        })}
       </ul>
     </section>
   );
